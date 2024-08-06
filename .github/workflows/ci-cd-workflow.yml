@@ -1,0 +1,71 @@
+name: CI/CD Pipeline - v7
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Set up Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: '3.x'
+
+    - name: Install dependencies
+      run: |
+        python -m venv venv
+        source venv/bin/activate
+        pip install pytest requests
+
+    - name: Build Docker image
+      run: |
+        docker build -f Containerfile -t myapp:test .
+
+    - name: Run Docker container
+      run: |
+        docker run -d -p 80:80 myapp:test
+        sleep 10  # Wait for the container to be fully up and running
+
+    - name: Run tests
+      run: |
+        source venv/bin/activate
+        pytest test_webserver.py
+
+  build_and_push:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v1
+
+    - name: Log in to DockerHub
+      uses: docker/login-action@v2
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    - name: Build and push Docker image
+      run: |
+        docker build -f Containerfile -t ${{ secrets.DOCKER_USERNAME }}/myapp:${{ github.sha }} .
+        docker push ${{ secrets.DOCKER_USERNAME }}/myapp:${{ github.sha }}
+
+  deploy:
+    needs: build_and_push
+    runs-on: ubuntu-latest
+    steps:
+    - name: Pull and run Docker image
+      run: |
+        docker pull ${{ secrets.DOCKER_USERNAME }}/myapp:${{ github.sha }}
+        docker run -d -p 80:80 ${{ secrets.DOCKER_USERNAME }}/myapp:${{ github.sha }}
