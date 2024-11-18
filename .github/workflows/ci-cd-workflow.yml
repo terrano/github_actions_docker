@@ -95,4 +95,4 @@ jobs:
     - name: Pull and run Docker image
       run: |
         docker pull ${{ secrets.DOCKER_USERNAME }}/${{ vars.IMAGE_NAME }}:${{ github.sha }}
-        docker run -d -p 80:80 ${{ secrets.DOCKER_USERNAME }}/myapp:${{ github.sha }}
+        docker run -d -p 80:80 ${{ secrets.DOCKER_USERNAME }}/${{ vars.IMAGE_NAME }}:${{ github.sha }}
