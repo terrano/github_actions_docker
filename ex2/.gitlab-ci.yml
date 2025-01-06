@@ -160,7 +160,7 @@ deploy-image:
   image: amazon/aws-cli:2.13.0
   before_script:
     - yum update -y
-    - yum install -y git
+    - yum install -y git jq
     - git clone "$CI_REPOSITORY_URL" repo
     - cd repo
     - git fetch --tag
@@ -174,16 +174,16 @@ deploy-image:
           --document-name "AWS-RunShellScript" \
           --targets "[{\"Key\":\"InstanceIds\",\"Values\":[\"$INSTANCE_ID\"]}]" \
           --comment "Running Docker images on EC2" \
-          --parameters '{
+          --parameters "$(jq -n --arg region "$AWS_DEFAULT_REGION" --arg registry "$DOCKER_REGISTRY" --arg image "$FULL_IMAGE_NAME" '{
             "commands": [
-              "sudo aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $DOCKER_REGISTRY",
+              "sudo aws ecr get-login-password --region \($region) | docker login --username AWS --password-stdin \($registry)",
               "sudo docker stop petclinic || true",
               "sudo docker rm petclinic || true",
-              "sudo docker pull $FULL_IMAGE_NAME",
-              "sudo docker run -d --name petclinic --rm -p 8080:8080 -e BPL_JVM_HEAD_ROOM=0 -e BPL_JVM_THREAD_COUNT=100 $FULL_IMAGE_NAME"
+              "sudo docker pull \($image)",
+              "sudo docker run -d --name petclinic --rm -p 8080:8080 -e BPL_JVM_HEAD_ROOM=0 -e BPL_JVM_THREAD_COUNT=100 \($image)"
             ]
-          }' \
-          --region $AWS_DEFAULT_REGION
+          }')" \
+          --region "$AWS_DEFAULT_REGION"
       done
   only:
     - main
