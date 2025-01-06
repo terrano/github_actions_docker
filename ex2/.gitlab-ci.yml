@@ -1,0 +1,189 @@
+stages:  
+  - build
+  - static-analysis
+  - test
+  - validation
+  - version
+  - docker
+  - deploy
+
+###################################################################################################
+variables:
+  DOCKER_HOST: tcp://docker:2375
+  DOCKER_TLS_CERTDIR: ""
+  IMAGE_NAME: spring-petclinic-image
+  DOCKER_REGISTRY: 211125418581.dkr.ecr.us-east-2.amazonaws.com  
+
+###################################################################################################
+build-job: 
+  stage: build
+  image: maven:3.8-openjdk-17 
+  script:
+    - echo "Building..."
+    - mvn -B clean verify 
+  artifacts:
+    paths:
+      - target/ 
+    expire_in: 1 day 
+
+###################################################################################################
+
+lint:
+  stage: static-analysis
+  image: maven:3.8-openjdk-17 
+  script:
+    - echo "Testing... Checkstyle"
+    - mvn checkstyle:checkstyle
+  artifacts:
+    when: always
+    paths:
+      - target/reports/checkstyle.html
+    expire_in: 1 day
+
+static_code_analysis:
+  stage: static-analysis
+  image: maven:3.8-openjdk-17 
+  script:
+    - echo "Testing... Static Code Analysis"
+    - mvn pmd:check
+  artifacts:
+    when: always
+    paths:
+      - target/site/
+    expire_in: 1 day
+
+cve:
+  stage: static-analysis
+  image: maven:3.8-openjdk-17 
+  script:
+    - echo "Testing... Common Vulnerability Exposure"
+    - mvn dependency-check:check
+  artifacts:
+    when: always
+    paths:
+      - target/dependency-check-report.html
+      - target/dependency-check-report.xml
+    expire_in: 1 day
+
+code-coverage:
+  stage: static-analysis
+  image: maven:3.8-openjdk-17 
+  script:
+    - echo "Testing... Code Coverage"
+    - mvn clean verify
+  artifacts:
+    paths:
+      - target/site/jacoco/
+    expire_in: 1 day 
+
+unit-test-job:   
+  stage: test    
+  image: maven:3.8-openjdk-17 
+  script:
+    - echo "Testing... Unit test"
+    - mvn test
+  artifacts:
+    when: always
+    reports:
+      junit: target/surefire-reports/*.xml 
+    paths:
+      - target/surefire-reports/
+    expire_in: 1 day
+
+###################################################################################################
+
+validate-commit-message:
+  stage: validation
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache git bash
+  script:
+    - echo "Validating commit message..."
+    - |
+      latest_commit_message=$(git log -1 --pretty=%B | xargs)
+      echo "Latest commit message: '$latest_commit_message'"
+
+      pattern='^(fix|feat|perf|BREAKING CHANGE): .{3,}'
+
+      echo "Pattern: '$pattern'"
+
+      # Validate the commit message using grep with the -E (extended regex) option
+      echo "Checking commit message with regex:"
+      echo "$latest_commit_message" | grep -Eq "$pattern" && echo "Valid commit message." || {
+        echo "ERROR: Commit message does not follow the required pattern!"
+        echo "Commit message: '$latest_commit_message'"
+        echo "Expected pattern: 'fix|feat|perf|BREAKING CHANGE: <message>'"
+        exit 1
+      }
+
+      echo "Commit message is valid: '$latest_commit_message'"
+
+###################################################################################################
+
+versioning:
+  stage: version
+  image: node:20 
+  dependencies:
+    - validate-commit-message
+  script:
+    - git remote set-url origin "https://gitlab-ci-token:${GL_TOKEN}@git.epam.com/${CI_PROJECT_PATH}.git"
+    - npm ci
+    - npx semantic-release
+  only:
+    - main
+
+###################################################################################################
+
+build-docker:
+  stage: docker
+  image: docker:24.0
+  services:
+    - docker:24.0-dind
+  before_script:
+    - apk add --no-cache openjdk17 maven
+    - apk add --no-cache aws-cli
+    - apk add --no-cache docker-cli
+  script:
+    - latest_tag=$(git describe --tags `git rev-list --tags --max-count=1`)
+    - FULL_IMAGE_NAME=$DOCKER_REGISTRY/${IMAGE_NAME}:${latest_tag}
+    - mvn spring-boot:build-image -Dspring-boot.build-image.imageName=$FULL_IMAGE_NAME
+    - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $DOCKER_REGISTRY
+    - sleep 15
+    - docker push $FULL_IMAGE_NAME
+  only:
+    - main
+
+###################################################################################################
+
+deploy-image:
+  stage: deploy
+  image: amazon/aws-cli:2.13.0
+  before_script:
+    - yum update -y
+    - yum install -y git
+    - git clone "$CI_REPOSITORY_URL" repo
+    - cd repo
+    - git fetch --tag
+  script:
+    - latest_tag=$(git describe --tags `git rev-list --tags --max-count=1`)
+    - FULL_IMAGE_NAME=$DOCKER_REGISTRY/$IMAGE_NAME:$latest_tag
+    - INSTANCE_IDS=$(aws ssm describe-instance-information --query "InstanceInformationList[*].InstanceId" --output text)
+    - |
+      for INSTANCE_ID in $INSTANCE_IDS; do
+        aws ssm send-command \
+          --document-name "AWS-RunShellScript" \
+          --targets "[{\"Key\":\"InstanceIds\",\"Values\":[\"$INSTANCE_ID\"]}]" \
+          --comment "Running Docker images on EC2" \
+          --parameters '{
+            "commands": [
+              "sudo aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $DOCKER_REGISTRY",
+              "sudo docker stop petclinic || true",
+              "sudo docker rm petclinic || true",
+              "sudo docker pull $FULL_IMAGE_NAME",
+              "sudo docker run -d --name petclinic --rm -p 8080:8080 -e BPL_JVM_HEAD_ROOM=0 -e BPL_JVM_THREAD_COUNT=100 $FULL_IMAGE_NAME"
+            ]
+          }' \
+          --region $AWS_DEFAULT_REGION
+      done
+  only:
+    - main
