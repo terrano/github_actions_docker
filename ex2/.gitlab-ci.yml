@@ -12,7 +12,8 @@ variables:
   DOCKER_HOST: tcp://docker:2375
   DOCKER_TLS_CERTDIR: ""
   IMAGE_NAME: spring-petclinic-image
-  DOCKER_REGISTRY: 211125418581.dkr.ecr.us-east-2.amazonaws.com  
+  TARGET_REGION: "us-east-2"
+  TARGET_PRJ_UID: "ohio-1"
 
 ###################################################################################################
 build-job: 
@@ -144,14 +145,17 @@ build-docker:
     - apk add --no-cache aws-cli
     - apk add --no-cache docker-cli
   script:
+    - |
+      if [ -z "$TARGET_REGION" ]; then echo "Error: TARGET_REGION variable is required."; exit 1; fi
+    - DOCKER_REGISTRY="211125418581.dkr.ecr.${TARGET_REGION}.amazonaws.com"
     - latest_tag=$(git describe --tags `git rev-list --tags --max-count=1`)
     - FULL_IMAGE_NAME=$DOCKER_REGISTRY/${IMAGE_NAME}:${latest_tag}
     - mvn spring-boot:build-image -Dspring-boot.build-image.imageName=$FULL_IMAGE_NAME
-    - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $DOCKER_REGISTRY
-    - sleep 15
-    - docker push $FULL_IMAGE_NAME
+    - aws ecr get-login-password --region $TARGET_REGION | docker login --username AWS --password-stdin $DOCKER_REGISTRY || exit 1
+    - docker push $FULL_IMAGE_NAME || exit 1
+  when: manual
   only:
-    - main
+    - main  
 
 ###################################################################################################
 
@@ -165,16 +169,19 @@ deploy-image:
     - cd repo
     - git fetch --tag
   script:
+    - |
+      if [ -z "$TARGET_REGION" ]; then echo "Error: TARGET_REGION variable is required."; exit 1; fi
     - latest_tag=$(git describe --tags `git rev-list --tags --max-count=1`)
+    - DOCKER_REGISTRY="211125418581.dkr.ecr.${TARGET_REGION}.amazonaws.com"
     - FULL_IMAGE_NAME=$DOCKER_REGISTRY/$IMAGE_NAME:$latest_tag
-    - INSTANCE_IDS=$(aws ssm describe-instance-information --query "InstanceInformationList[*].InstanceId" --output text)
+    - INSTANCE_IDS=$(aws ssm describe-instance-information --query "InstanceInformationList[*].InstanceId" --region "${TARGET_REGION}" --filters Key="tag:uid",Values="${TARGET_PRJ_UID}" --output text)
     - |
       for INSTANCE_ID in $INSTANCE_IDS; do
         aws ssm send-command \
           --document-name "AWS-RunShellScript" \
           --targets "[{\"Key\":\"InstanceIds\",\"Values\":[\"$INSTANCE_ID\"]}]" \
           --comment "Running Docker images on EC2" \
-          --parameters "$(jq -n --arg region "$AWS_DEFAULT_REGION" --arg registry "$DOCKER_REGISTRY" --arg image "$FULL_IMAGE_NAME" '{
+          --parameters "$(jq -n --arg region "$TARGET_REGION" --arg registry "$DOCKER_REGISTRY" --arg image "$FULL_IMAGE_NAME" '{
             "commands": [
               "sudo aws ecr get-login-password --region \($region) | docker login --username AWS --password-stdin \($registry)",
               "sudo docker stop petclinic || true",
@@ -183,7 +190,8 @@ deploy-image:
               "sudo docker run -d --name petclinic --rm -p 8080:8080 -e BPL_JVM_HEAD_ROOM=0 -e BPL_JVM_THREAD_COUNT=100 \($image)"
             ]
           }')" \
-          --region "$AWS_DEFAULT_REGION"
+          --region "$TARGET_REGION"
       done
+  when: manual
   only:
     - main
