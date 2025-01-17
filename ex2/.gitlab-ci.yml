@@ -145,15 +145,12 @@ build-docker:
     - apk add --no-cache aws-cli
     - apk add --no-cache docker-cli
   script:
-    - |
-      if [ -z "$TARGET_REGION" ]; then echo "Error: TARGET_REGION variable is required."; exit 1; fi
     - DOCKER_REGISTRY="211125418581.dkr.ecr.${TARGET_REGION}.amazonaws.com"
     - latest_tag=$(git describe --tags `git rev-list --tags --max-count=1`)
     - FULL_IMAGE_NAME=$DOCKER_REGISTRY/${IMAGE_NAME}:${latest_tag}
     - mvn spring-boot:build-image -Dspring-boot.build-image.imageName=$FULL_IMAGE_NAME
     - aws ecr get-login-password --region $TARGET_REGION | docker login --username AWS --password-stdin $DOCKER_REGISTRY || exit 1
     - docker push $FULL_IMAGE_NAME || exit 1
-  when: manual
   only:
     - main  
 
@@ -169,8 +166,6 @@ deploy-image:
     - cd repo
     - git fetch --tag
   script:
-    - |
-      if [ -z "$TARGET_REGION" ]; then echo "Error: TARGET_REGION variable is required."; exit 1; fi
     - latest_tag=$(git describe --tags `git rev-list --tags --max-count=1`)
     - DOCKER_REGISTRY="211125418581.dkr.ecr.${TARGET_REGION}.amazonaws.com"
     - FULL_IMAGE_NAME=$DOCKER_REGISTRY/$IMAGE_NAME:$latest_tag
